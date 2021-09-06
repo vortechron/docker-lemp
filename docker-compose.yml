@@ -1,36 +1,182 @@
-nginx:
-    image: tutum/nginx
-    ports:
-        - "80:80"
-    links:
-        - phpfpm
-    volumes:
-        - ./nginx/default:/etc/nginx/sites-available/default
-        - ./nginx/default:/etc/nginx/sites-enabled/default
+version: '3'
 
-        - ./logs/nginx-error.log:/var/log/nginx/error.log
-        - ./logs/nginx-access.log:/var/log/nginx/access.log
-phpfpm:
-    image: php:fpm
+networks:
+  laravel:
+
+services:
+  site:
+    build:
+      context: .
+      dockerfile: nginx.dockerfile
+      args:
+        - NGINXUSER=${NGINXUSER:-www-data}
+        - NGINXGROUP=${NGINXGROUP:-www-data}
+    container_name: nginx
     ports:
-        - "9000:9000"
+      - 80:80
     volumes:
-        - ./public:/usr/share/nginx/html
-mysql:
-  image: mariadb
-  environment:
-    MYSQL_ROOT_PASSWORD: admin
-  ports:
-    - "3306:3306" 
-phpmyadmin:
-  image: phpmyadmin/phpmyadmin
-  restart: always
-  links:
-    - mysql
-  ports:
-    - 8181:80
-  environment:
-    PMA_HOST: mysql
-    PMA_USER: root
-    PMA_PASSWORD: admin
-    PMA_ARBITRARY: 1﻿
+      - ./src:/var/www/html:delegated
+    depends_on:
+      - php
+      - redis
+      - mysql
+      - mailhog
+      - scheduler
+      - queue
+      - websocket
+    networks:
+      - laravel
+
+  mysql:
+    image: mysql:5.7.29
+    container_name: mysql
+    restart: unless-stopped
+    tty: true
+    ports:
+      - 3306:3306
+    environment:
+      MYSQL_DATABASE: app
+      MYSQL_USER: root
+      MYSQL_PASSWORD: secret
+      MYSQL_ROOT_PASSWORD: secret
+      SERVICE_TAGS: dev
+      SERVICE_NAME: mysql
+    volumes:
+      - ./mysql/lib:/var/lib/mysql
+    networks:
+      - laravel
+    extra_hosts: # <-- does no harm
+      - "host.docker.internal:host-gateway" # <-- does no harm
+
+  php:
+    build:
+      context: .
+      dockerfile: php.dockerfile
+      args:
+        - PHPUSER=${PHPUSER:-www-data}
+        - PHPGROUP=${PHPGROUP:-www-data}
+    container_name: php
+    volumes:
+      - ./src:/var/www/html:delegated
+      - ./php/local.ini:/usr/local/etc/php/conf.d/local.ini
+    networks:
+      - laravel
+    environment:
+      APP_ENV: local
+      CONTAINER_ROLE: php
+    extra_hosts: # <--- this is required
+      - "host.docker.internal:host-gateway" # <--- this is required
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - 6379:6379
+    networks:
+      - laravel
+
+  composer:
+    build:
+      context: .
+      dockerfile: composer.dockerfile
+      args:
+        - PHPUSER=${PHPUSER:-www-data}
+        - PHPGROUP=${PHPGROUP:-www-data}
+    container_name: composer
+    volumes:
+      - ./src:/var/www/html
+    working_dir: /var/www/html
+    depends_on:
+      - php
+    user: ${PHPUSER:-www-data}
+    entrypoint: ['composer', '--ignore-platform-reqs']
+    networks:
+      - laravel
+
+  npm:
+    image: node:13.7
+    container_name: npm
+    volumes:
+      - ./src:/var/www/html
+    ports:
+      - 3000:3000
+      - 3001:3001
+    working_dir: /var/www/html
+    entrypoint: ['npm']
+    networks:
+      - laravel
+
+  artisan:
+    build:
+      context: .
+      dockerfile: php.dockerfile
+      args:
+        - PHPUSER=${PHPUSER:-www-data}
+        - PHPGROUP=${PHPGROUP:-www-data}
+    container_name: artisan
+    volumes:
+      - ./src:/var/www/html:delegated
+    depends_on:
+      - mysql
+    working_dir: /var/www/html
+    entrypoint: ['php', '/var/www/html/artisan']
+    networks:
+      - laravel
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: mailhog
+    ports:
+      - 1025:1025
+      - 8025:8025
+    networks:
+      - laravel
+
+  scheduler:
+    container_name: scheduler
+    build:
+      context: .
+      dockerfile: php.dockerfile
+      args:
+        - PHPUSER=${PHPUSER:-www-data}
+        - PHPGROUP=${PHPGROUP:-www-data}
+    volumes:
+      - ./src:/var/www/html:delegated
+    environment:
+      APP_ENV: local
+      CONTAINER_ROLE: scheduler
+    networks:
+      - laravel
+  queue:
+    container_name: queue
+    build:
+      context: .
+      dockerfile: php.dockerfile
+      args:
+        - PHPUSER=${PHPUSER:-www-data}
+        - PHPGROUP=${PHPGROUP:-www-data}
+    volumes:
+      - ./src:/var/www/html:delegated
+    environment:
+      APP_ENV: local
+      CONTAINER_ROLE: queue
+    networks:
+      - laravel
+  websocket:
+    container_name: websocket
+    build:
+      context: .
+      dockerfile: php.dockerfile
+      args:
+        - PHPUSER=${PHPUSER:-www-data}
+        - PHPGROUP=${PHPGROUP:-www-data}
+    volumes:
+      - ./src:/var/www/html:delegated
+    environment:
+      APP_ENV: local
+      CONTAINER_ROLE: websocket
+    ports:
+      - 6001:6001
+    networks:
+      - laravel
